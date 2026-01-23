@@ -44,6 +44,26 @@ jobs:
       - name: Upload ELF artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: prebuilt-elf-files
+          name: op-succinct-elf-files
           path: elf/
           retention-days: 3
+
+  build-proposer:
+    needs: build-elf
+    uses: risechain/devops/.github/workflows/multi-platform-docker-build.yml@ci-build-wif
+    with:
+      repo_name: risechain/op-succinct/lite-proposer-eigenda
+      inject_artifact_name: op-succinct-elf-files
+      context_path: .
+      docker_file: fault-proof/Dockerfile.proposer.eigenda
+    secrets: inherit
+
+  build-challenger:
+    needs: build-elf
+    uses: risechain/devops/.github/workflows/multi-platform-docker-build.yml@ci-build-wif
+    with:
+      repo_name: risechain/op-succinct/lite-challenger-eigenda
+      inject_artifact_name: op-succinct-elf-files
+      context_path: .
+      docker_file: fault-proof/Dockerfile.challenger
+    secrets: inherit
