@@ -1,0 +1,49 @@
+name: RISE build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    tags:
+      - v[0-9]+.*
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-elf:
+    runs-on: velia-amd64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SP1 toolchain
+        run: |
+          curl -L https://sp1.succinct.xyz | bash
+          ~/.sp1/bin/sp1up
+          ~/.sp1/bin/cargo-prove prove --version
+          source ~/.bashrc
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: Build and verify ELF files
+        run: |
+          (cd programs/aggregation && ~/.sp1/bin/cargo-prove prove build --elf-name aggregation-elf --docker --tag v5.2.4 --output-directory ../../elf)
+
+          (cd programs/range/eigenda && ~/.sp1/bin/cargo-prove prove build --elf-name eigenda-range-elf-embedded --docker --tag v5.2.4 --output-directory ../../../elf --features embedded)
+
+          cp /dev/null elf/celestia-range-elf-embedded
+          cp /dev/null elf/range-elf-embedded
+          cp /dev/null elf/range-elf-bump
+
+      - name: Upload ELF artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: prebuilt-elf-files
+          path: elf/
+          retention-days: 3
