@@ -1,0 +1,50 @@
+name: Build and push Docker images to GCP
+description: Build Docker image and push to GCP Artifact Registry
+
+inputs:
+  gcp_artifact_project_number:
+    description: GCP Artifact Project Number
+  gcp_artifact_project_id:
+    description: GCP Artifact Project ID
+  gcp_artifact_registry_region:
+    description: GCP Artifact Registry Region
+  gcp_artifact_repo_name:
+    description: GCP Artifact Repository Name
+  image_suffix:
+    description: Suffix for the image tag. Should be in the format of ".<arch>" (e.g., ".arm64", ".amd64"). If the suffix includes "-native" (e.g., ".arm64-native"), it will set RUSTFLAGS to "-C target-cpu=native".
+  context_path:
+    description: "Path to the directory containing Dockerfile and necessary files for building Docker image"
+    default: "./"
+  docker_file:
+    description: "Path to Dockerfile relative to context_path"
+    default: "Dockerfile"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Docker Buildx
+      id: setup
+      uses: ./.github/actions/rise/setup-gcp-docker-build
+      with:
+        gcp_artifact_project_number: ${{ inputs.gcp_artifact_project_number }}
+        gcp_artifact_project_id: ${{ inputs.gcp_artifact_project_id }}
+        gcp_artifact_registry_region: ${{ inputs.gcp_artifact_registry_region }}
+        gcp_artifact_repo_name: ${{ inputs.gcp_artifact_repo_name }}
+        image_suffix: ${{ inputs.image_suffix }}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v6
+      with:
+        builder: risebuilder
+        context: ${{ inputs.context_path }}
+        file: ${{ inputs.docker_file }}
+        push: true
+        tags: ${{ steps.setup.outputs.rise_image_tags }}
+        labels: ${{ steps.setup.outputs.rise_image_labels }}
+        cache-from: type=local,src=/tmp/.buildx-cache
+        cache-to: type=local,dest=/tmp/.buildx-cache
+        # disables BuildKit image provenance attestation about the image build platform
+        # we don't need this because we likely have the platform suffix (e.g., .arm64) in the image name
+        # and we'll create the manifest manually for the multi-arch image
+        provenance: false
+

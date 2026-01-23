@@ -50,7 +50,7 @@ jobs:
 
   build-proposer:
     needs: build-elf
-    uses: risechain/devops/.github/workflows/multi-platform-docker-build.yml@ci-build-wif
+    uses: ./.github/workflows/rise-docker-build.yml
     with:
       repo_name: risechain/op-succinct/lite-proposer-eigenda
       inject_artifact_name: op-succinct-elf-files
@@ -60,7 +60,7 @@ jobs:
 
   build-challenger:
     needs: build-elf
-    uses: risechain/devops/.github/workflows/multi-platform-docker-build.yml@ci-build-wif
+    uses: ./.github/workflows/rise-docker-build.yml
     with:
       repo_name: risechain/op-succinct/lite-challenger-eigenda
       inject_artifact_name: op-succinct-elf-files

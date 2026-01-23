@@ -1,0 +1,118 @@
+name: Reusable Multi-platform Docker Build
+
+on:
+  workflow_call:
+    inputs:
+      repo_name:
+        required: true
+        type: string
+      context_path:
+        required: false
+        type: string
+        description: "Path to the directory containing Dockerfile and necessary files to build Docker image"
+        default: "./"
+      docker_file:
+        required: false
+        type: string
+        description: "Path to Dockerfile relative to context_path"
+        default: "Dockerfile"
+      inject_artifact_name:
+        required: false
+        type: string
+        description: "Name of artifact containing pre-built files to copy into workspace"
+        default: "" 
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-arm64:
+    runs-on: [ self-hosted, aws-arm64, risechain-ci ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Pre-built Artifacts
+        if: inputs.inject_artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.inject_artifact_name }}
+          # Extract directly to root directory (workspace), overwrite existing files if duplicates
+          path: .
+
+      # Check if files are in the correct location (Debug)
+      - name: Verify files (Optional)
+        if: inputs.inject_artifact_name != ''
+        run: ls -R
+
+      - name: Build and push Docker image
+        uses: .github/actions/rise/build-gcp-docker
+        with:
+          gcp_artifact_project_number: ${{ secrets.GCP_ARTIFACT_PROJECT_NUMBER }}
+          gcp_artifact_project_id: ${{ secrets.GCP_ARTIFACT_PROJECT_ID }}
+          gcp_artifact_registry_region: ${{ secrets.GCP_ARTIFACT_REGISTRY_REGION }}
+          gcp_artifact_repo_name: ${{ inputs.repo_name }}
+          image_suffix: .arm64
+          context_path: ${{ inputs.context_path }}
+          docker_file: ${{ inputs.docker_file }}
+
+  build-amd64:
+    runs-on: [ self-hosted, velia-amd64 ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Pre-built Artifacts
+        if: inputs.inject_artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.inject_artifact_name }}
+          # Extract directly to root directory (workspace), overwrite existing files if duplicates
+          path: .
+
+      # Check if files are in the correct location (Debug)
+      - name: Verify files (Optional)
+        if: inputs.inject_artifact_name != ''
+        run: ls -R
+
+      - name: Build and push Docker image
+        uses: .github/actions/rise/build-gcp-docker
+        with:
+          gcp_artifact_project_number: ${{ secrets.GCP_ARTIFACT_PROJECT_NUMBER }}
+          gcp_artifact_project_id: ${{ secrets.GCP_ARTIFACT_PROJECT_ID }}
+          gcp_artifact_registry_region: ${{ secrets.GCP_ARTIFACT_REGISTRY_REGION }}
+          gcp_artifact_repo_name: ${{ inputs.repo_name }}
+          image_suffix: .amd64
+          context_path: ${{ inputs.context_path }}
+          docker_file: ${{ inputs.docker_file }}
+
+  make-multi-arch-rise-node:
+    needs: [build-amd64, build-arm64]
+    runs-on: [ self-hosted, aws-arm64, risechain-ci ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        id: setup
+        uses: .github/actions/rise/setup-gcp-docker-build
+        with:
+          gcp_artifact_project_number: ${{ secrets.GCP_ARTIFACT_PROJECT_NUMBER }}
+          gcp_artifact_project_id: ${{ secrets.GCP_ARTIFACT_PROJECT_ID }}
+          gcp_artifact_registry_region: ${{ secrets.GCP_ARTIFACT_REGISTRY_REGION }}
+          gcp_artifact_repo_name: ${{ inputs.repo_name }}
+          image_suffix: ""
+
+      # Create a manifest list for the multi-arch image, including the arm64 and amd64 platforms
+      # and push them to the GCP Artifact Registry with this manifest attached
+      - name: Create and push manifest
+        shell: bash
+        run: |
+          # This TAGS is expected to be a single tag, as we mainly go with the `sha` tag.
+          # If we update more new tags in the `setup-gcp-docker-build` step, we need to update this part.
+          IMAGE_TAG="${{ steps.setup.outputs.rise_image_tags }}"
+          docker manifest create "${IMAGE_TAG}" "${IMAGE_TAG}.amd64" "${IMAGE_TAG}.arm64"
+          docker manifest push "${IMAGE_TAG}"
+
