@@ -22,10 +22,6 @@ on:
         description: "Name of artifact containing pre-built files to copy into workspace"
         default: "" 
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
   build-arm64:
     runs-on: [ self-hosted, aws-arm64, risechain-ci ]
