@@ -47,7 +47,7 @@ jobs:
         run: ls -R
 
       - name: Build and push Docker image
-        uses: .github/actions/rise/build-gcp-docker
+        uses: ./.github/actions/rise/build-gcp-docker
         with:
           gcp_artifact_project_number: ${{ secrets.GCP_ARTIFACT_PROJECT_NUMBER }}
           gcp_artifact_project_id: ${{ secrets.GCP_ARTIFACT_PROJECT_ID }}
@@ -77,7 +77,7 @@ jobs:
         run: ls -R
 
       - name: Build and push Docker image
-        uses: .github/actions/rise/build-gcp-docker
+        uses: ./.github/actions/rise/build-gcp-docker
         with:
           gcp_artifact_project_number: ${{ secrets.GCP_ARTIFACT_PROJECT_NUMBER }}
           gcp_artifact_project_id: ${{ secrets.GCP_ARTIFACT_PROJECT_ID }}
@@ -97,7 +97,7 @@ jobs:
 
       - name: Setup Docker Buildx
         id: setup
-        uses: .github/actions/rise/setup-gcp-docker-build
+        uses: ./.github/actions/rise/setup-gcp-docker-build
         with:
           gcp_artifact_project_number: ${{ secrets.GCP_ARTIFACT_PROJECT_NUMBER }}
           gcp_artifact_project_id: ${{ secrets.GCP_ARTIFACT_PROJECT_ID }}
