@@ -3850,18 +3850,3 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[patch.unused]]
-name = "op-alloy-network"
-version = "0.23.1"
-source = "git+https://github.com/ethereum-optimism/optimism?tag=op-reth%2Fv1.11.5#cba7aba0c98aae22720b21c3a023990a486cb6e0"
-
-[[patch.unused]]
-name = "op-alloy-provider"
-version = "0.23.1"
-source = "git+https://github.com/ethereum-optimism/optimism?tag=op-reth%2Fv1.11.5#cba7aba0c98aae22720b21c3a023990a486cb6e0"
-
-[[patch.unused]]
-name = "tiny-keccak"
-version = "2.0.2"
-source = "git+https://github.com/sp1-patches/tiny-keccak?tag=patch-2.0.2-sp1-6.0.0#957430a459f7a2332ab5bab4a12f9b473bb95c87"

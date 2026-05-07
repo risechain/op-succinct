@@ -75,13 +75,10 @@ sha3 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sh
 substrate-bn = { git = "https://github.com/sp1-patches/bn", tag = "patch-0.6.0-sp1-6.0.0-substrate-bn" }
 p256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-p256-13.2-sp1-6.0.0" }
 k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-6.0.0" }
-tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-6.0.0" }
 
 # Patch op-alloy to use the optimism monorepo versions.
 # Required because kona op-reth/v1.11.5 uses path deps from the monorepo.
 op-alloy-consensus = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v1.11.5" }
-op-alloy-network = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v1.11.5" }
 op-alloy-rpc-types = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v1.11.5" }
 op-alloy-rpc-types-engine = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v1.11.5" }
-op-alloy-provider = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v1.11.5" }
 op-alloy = { git = "https://github.com/ethereum-optimism/optimism", tag = "op-reth/v1.11.5" }
