@@ -23,7 +23,7 @@ kona-protocol.workspace = true
 
 # alloy
 alloy-consensus.workspace = true
-alloy-eips.workspace = true
+alloy-eips = { workspace = true, features = ["kzg"] }
 alloy-primitives.workspace = true
 
 # general
