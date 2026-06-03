@@ -1,4 +1,5 @@
 pub mod block_range;
+pub mod rise_rollup_config;
 mod constants;
 mod contract;
 pub mod fetcher;

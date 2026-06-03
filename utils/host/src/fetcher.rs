@@ -350,8 +350,9 @@ impl OPSuccinctDataFetcher {
     async fn fetch_and_save_rollup_config(
         rpc_config: &RPCConfig,
     ) -> Result<(RollupConfig, PathBuf)> {
-        let rollup_config: RollupConfig =
+        let rise_rollup_config: crate::rise_rollup_config::RiseRollupConfig =
             Self::fetch_rpc_data(&rpc_config.l2_node_rpc, "optimism_rollupConfig", vec![]).await?;
+        let rollup_config = RollupConfig::from(rise_rollup_config);
 
         // Create configs directory if it doesn't exist
         let default_dir = PathBuf::from("configs/L2");

@@ -8693,6 +8693,7 @@ dependencies = [
 name = "op-succinct-host-utils"
 version = "3.4.1"
 dependencies = [
+ "alloy-chains",
  "alloy-consensus",
  "alloy-contract",
  "alloy-eips",

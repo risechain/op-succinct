@@ -4,6 +4,7 @@ use alloy_transport_http::reqwest::Url;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use kona_genesis::RollupConfig;
+use op_succinct_host_utils::rise_rollup_config::RiseRollupConfig;
 use op_succinct_client_utils::boot::hash_rollup_config;
 use op_succinct_elfs::AGGREGATION_ELF;
 use op_succinct_proof_utils::get_range_elf_embedded;
@@ -70,10 +71,11 @@ async fn main() -> anyhow::Result<()> {
         }
         DigestCommand::RollupConfigHash { l2_node_rpc } => {
             let rpc_client = RpcClient::new_http(l2_node_rpc);
-            let rollup_config: RollupConfig = rpc_client
+            let rise_rollup_config: RiseRollupConfig = rpc_client
                 .request_noparams("optimism_rollupConfig")
                 .await
                 .context("Failed to fetch rollup config")?;
+            let rollup_config = RollupConfig::from(rise_rollup_config);
             println!("{}", hash_rollup_config(&rollup_config));
         }
     }
