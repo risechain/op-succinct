@@ -28,6 +28,8 @@ pub struct OutputResponse {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputBlockRef {
+    // Rise CL returns "l1origin" (lowercase); alias covers the camelCase variant too.
+    #[serde(rename = "l1origin", alias = "l1Origin")]
     pub l1_origin: BlockNumHash,
 }
 
