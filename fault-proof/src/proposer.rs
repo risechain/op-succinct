@@ -1257,12 +1257,15 @@ where
     async fn resolve_games(&self) -> Result<()> {
         let candidates = {
             let state = self.state.read().await;
-            state
+            let mut games: Vec<_> = state
                 .games
                 .values()
                 .filter(|game| game.should_attempt_to_resolve)
                 .cloned()
-                .collect::<Vec<_>>()
+                .collect();
+            // Sort by index ascending so parent games are resolved before their children.
+            games.sort_by_key(|game| game.index);
+            games
         };
 
         for game in candidates {
