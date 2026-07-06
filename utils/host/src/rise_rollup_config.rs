@@ -2,6 +2,7 @@
 //! not present in Rise's `optimism_rollupConfig` RPC response.
 //!
 //! Rise omits these fields (hardcoded in [`From<RiseRollupConfig>`] for [`RollupConfig`]):
+//! - `max_sequencer_drift`            → same as `seq_window_size`
 //! - `channel_timeout`                → 300
 //! - `granite_channel_timeout`        → [`GRANITE_CHANNEL_TIMEOUT`]
 //! - `protocol_versions_address`      → [`Address::ZERO`]
@@ -32,7 +33,6 @@ use serde::Deserialize;
 pub struct RiseRollupConfig {
     pub genesis: ChainGenesis,
     pub block_time: u64,
-    pub max_sequencer_drift: u64,
     pub seq_window_size: u64,
     pub l1_chain_id: u64,
     pub l2_chain_id: Chain,
@@ -52,7 +52,7 @@ impl From<RiseRollupConfig> for RollupConfig {
         Self {
             genesis: rise.genesis,
             block_time: rise.block_time,
-            max_sequencer_drift: rise.max_sequencer_drift,
+            max_sequencer_drift: rise.seq_window_size,
             seq_window_size: rise.seq_window_size,
             channel_timeout: 300,
             granite_channel_timeout: GRANITE_CHANNEL_TIMEOUT,

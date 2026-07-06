@@ -4,9 +4,9 @@ use alloy_transport_http::reqwest::Url;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use kona_genesis::RollupConfig;
-use op_succinct_host_utils::rise_rollup_config::RiseRollupConfig;
 use op_succinct_client_utils::boot::hash_rollup_config;
 use op_succinct_elfs::AGGREGATION_ELF;
+use op_succinct_host_utils::rise_rollup_config::RiseRollupConfig;
 use op_succinct_proof_utils::get_range_elf_embedded;
 use sp1_sdk::{HashableKey, Prover, ProverClient};
 
