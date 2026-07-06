@@ -2,7 +2,7 @@
 //! not present in Rise's `optimism_rollupConfig` RPC response.
 //!
 //! Rise omits these fields (hardcoded in [`From<RiseRollupConfig>`] for [`RollupConfig`]):
-//! - `max_sequencer_drift`            → same as `seq_window_size`
+//! - `max_sequencer_drift`            → 600
 //! - `channel_timeout`                → 300
 //! - `granite_channel_timeout`        → [`GRANITE_CHANNEL_TIMEOUT`]
 //! - `protocol_versions_address`      → [`Address::ZERO`]
@@ -52,7 +52,7 @@ impl From<RiseRollupConfig> for RollupConfig {
         Self {
             genesis: rise.genesis,
             block_time: rise.block_time,
-            max_sequencer_drift: rise.seq_window_size,
+            max_sequencer_drift: 600,
             seq_window_size: rise.seq_window_size,
             channel_timeout: 300,
             granite_channel_timeout: GRANITE_CHANNEL_TIMEOUT,
