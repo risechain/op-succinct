@@ -1921,9 +1921,22 @@ where
     /// - Ok(false): No work needed (proposal interval not elapsed or no finalized blocks)
     /// - Err: Actual error occurred during task spawning
     async fn spawn_game_creation_task(&self) -> Result<bool> {
-        self.check_game_impl_hashes()
-            .await
-            .context("Pre-flight game implementation hash check failed")?;
+        let max_games_to_create_env = std::env::var("MAX_GAMES_TO_CREATE").ok();
+        let max_games_to_create =
+            max_games_to_create_env.as_deref().and_then(|v| v.parse::<usize>().ok()).unwrap_or(8);
+
+        match self.check_game_impl_hashes().await {
+            Ok(()) => {}
+            Err(e) if max_games_to_create_env.is_some() => {
+                tracing::warn!(
+                    "Pre-flight game implementation hash check failed: {e:#}. \
+                     Bypassed by MAX_GAMES_TO_CREATE being explicitly set."
+                );
+            }
+            Err(e) => {
+                return Err(e.context("Pre-flight game implementation hash check failed"));
+            }
+        }
 
         let starting_game_index: rise::GameIndex = {
             let state = self.state.read().await;
@@ -1933,11 +1946,6 @@ where
             }
             state.canonical_head_index.map(|index| index.to::<u32>()).unwrap_or(u32::MAX)
         };
-
-        let max_games_to_create = std::env::var("MAX_GAMES_TO_CREATE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(8);
 
         let l1_rpc = self.fetcher.rpc_config.l1_rpc_client();
         let l2_rpc = self.fetcher.rpc_config.l2_rpc_client();
