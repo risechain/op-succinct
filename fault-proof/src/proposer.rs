@@ -793,36 +793,17 @@ where
 
                         if is_finalized && credit == U256::ZERO {
                             // Game removal policy:
-                            // - Canonical head games are retained even with zero credit to maintain
-                            //   chain consistency.
-                            // - Anchor games are retained as they serve as the root of the dispute
-                            //   game tree.
-                            // - All other games with bonds already claimed are removed to free
-                            //   cache memory.
+                            // - Games at or after the anchor index are retained to preserve the
+                            //   parent chain needed by descendants_of.
+                            // - Games before the anchor are safe to remove.
 
-                            let canonical_head_index = {
+                            let anchor_game_index = {
                                 let state = self.state.read().await;
-                                state.canonical_head_index
+                                state.anchor_game.as_ref().map(|g| g.index)
                             };
 
-                            let should_remove = if canonical_head_index == Some(index) {
-                                tracing::debug!(game_index = %index, "Retaining game: canonical head");
-                                false
-                            } else {
-                                let anchor_game_address = self
-                                    .anchor_state_registry
-                                    .anchorGame()
-                                    .call()
-                                    .await
-                                    .context("Failed to fetch anchor game for removal check")?;
-
-                                if anchor_game_address == game_address {
-                                    tracing::debug!(game_index = %index, "Retaining game: anchor game");
-                                    false
-                                } else {
-                                    true
-                                }
-                            };
+                            let should_remove =
+                                anchor_game_index.is_some_and(|anchor| index < anchor);
 
                             if should_remove {
                                 actions.push(GameSyncAction::Remove(index));
@@ -915,9 +896,7 @@ where
     /// Computes the canonical head by scanning all cached games.
     ///
     /// Canonical head is the game with the highest L2 block number. When an anchor game exists,
-    /// the canonical head is chosen from its descendants, unless a non-descendant has a higher L2
-    /// block number and an earlier lineage (parent is genesis or has a lower parent index than the
-    /// best descendant).
+    /// the canonical head is chosen from its descendants.
     async fn compute_canonical_head(&self) {
         let mut state = self.state.write().await;
 
@@ -933,21 +912,7 @@ where
                     .filter(|g| reachable.contains(&g.index))
                     .max_by_key(|g| g.l2_block);
 
-                // Check non-descendants for override (higher block with genesis or lower parent)
-                let override_head = anchor_head.and_then(|anchor| {
-                    state
-                        .games
-                        .values()
-                        .filter(|g| !reachable.contains(&g.index))
-                        .filter(|g| {
-                            g.l2_block > anchor.l2_block &&
-                                (g.parent_index == u32::MAX ||
-                                    g.parent_index < anchor.parent_index)
-                        })
-                        .max_by_key(|g| g.l2_block)
-                });
-
-                override_head.or(anchor_head).cloned()
+                anchor_head.cloned()
             }
         };
 
