@@ -88,11 +88,8 @@ pub enum GameEventualValidityError {
 /// Information about a running task
 #[derive(Clone, Debug)]
 pub enum TaskInfo {
-    GameCreation { l2_block_numbers: Vec<BlockNumber> },
     GamePrecaching { game_address: Address },
     GameProving { game_address: Address, is_defense: bool },
-    GameResolution,
-    BondClaim,
 }
 
 /// Checks if a game is provable by this instance of proposer
@@ -390,9 +387,9 @@ where
 
             self.backup().await;
 
-            // 2. Spawn new work (non-blocking).
-            if let Err(e) = self.spawn_pending_operations().await {
-                tracing::warn!("Failed to spawn pending operations: {:?}", e);
+            // 2. Run pending operations (tx-sending tasks run sequentially).
+            if let Err(e) = self.run_pending_operations().await {
+                tracing::warn!("Failed to run pending operations: {:?}", e);
             }
 
             // 3. Handle completed tasks.
@@ -1722,86 +1719,55 @@ where
     /// Handle task failure based on task type
     async fn handle_task_failure(&self, info: &TaskInfo, _error: anyhow::Error) -> Result<()> {
         match info {
-            TaskInfo::GameCreation { .. } => {
-                ProposerGauge::GameCreationError.increment(1.0);
-            }
             TaskInfo::GamePrecaching { .. } => {
                 ProposerGauge::GamePrecachingError.increment(1.0);
             }
             TaskInfo::GameProving { .. } => {
                 ProposerGauge::GameProvingError.increment(1.0);
             }
-            TaskInfo::GameResolution => {
-                ProposerGauge::GameResolutionError.increment(1.0);
-            }
-            TaskInfo::BondClaim => {
-                ProposerGauge::BondClaimingError.increment(1.0);
-            }
         }
         Ok(())
     }
 
-    /// Spawn pending operations if not already running
-    async fn spawn_pending_operations(&self) -> Result<()> {
-        // Check if we should create a game and spawn task if needed
-        if !self
-            .has_active_task_of_type(&TaskInfo::GameCreation { l2_block_numbers: Vec::new() })
-            .await
-        {
-            match self.spawn_game_creation_task().await {
-                Ok(true) => tracing::info!("Successfully spawned game creation task"),
-                Ok(false) => {
-                    tracing::debug!("No game creation needed - proposal interval not elapsed")
-                }
-                Err(e) => tracing::warn!("Failed to spawn game creation task: {:?}", e),
+    /// Run pending operations sequentially to avoid nonce conflicts.
+    /// Tx-sending tasks (creation, resolution, bonds) run inline.
+    /// Compute tasks (defense, precaching) are still spawned in the background.
+    async fn run_pending_operations(&self) -> Result<()> {
+        // Game creation (sequential)
+        match self.run_game_creation().await {
+            Ok(true) => tracing::info!("Game creation completed successfully"),
+            Ok(false) => {
+                tracing::debug!("No game creation needed - proposal interval not elapsed")
             }
-        } else {
-            tracing::info!("Game creation task already active");
+            Err(e) => tracing::warn!("Game creation failed: {:?}", e),
         }
 
-        // Check if we should defend games
+        // Defense and precaching (spawned — compute tasks, no transactions)
         match self.spawn_game_defense_tasks().await {
             Ok(true) => tracing::info!("Successfully spawned game defense tasks"),
             Ok(false) => tracing::debug!("No games need defense or task already active"),
             Err(e) => tracing::warn!("Failed to spawn game defense tasks: {:?}", e),
         }
 
-        // Check if we should precache games
         match self.spawn_game_precaching_tasks().await {
             Ok(true) => tracing::info!("Successfully spawned game precaching tasks"),
             Ok(false) => tracing::debug!("No games need precaching or task already active"),
             Err(e) => tracing::warn!("Failed to spawn game precaching tasks: {:?}", e),
         }
 
-        // Spawn game resolution task
-        if !self.has_active_task_of_type(&TaskInfo::GameResolution).await {
-            if let Err(e) = self.spawn_game_resolution_task().await {
-                tracing::warn!("Failed to spawn game resolution task: {:?}", e);
-            } else {
-                tracing::info!("Successfully spawned game resolution task");
-            }
+        // Game resolution (sequential)
+        match self.resolve_games().await {
+            Ok(()) => tracing::info!("Game resolution completed successfully"),
+            Err(e) => tracing::warn!("Game resolution failed: {:?}", e),
         }
 
-        // Spawn bond claim task
-        if !self.has_active_task_of_type(&TaskInfo::BondClaim).await {
-            if let Err(e) = self.spawn_bond_claim_task().await {
-                tracing::warn!("Failed to spawn bond claim task: {:?}", e);
-            } else {
-                tracing::info!("Successfully spawned bond claim task");
-            }
-        } else {
-            tracing::info!("Bond claim task already active");
+        // Bond claims (sequential)
+        match self.claim_bonds().await {
+            Ok(()) => tracing::info!("Bond claiming completed successfully"),
+            Err(e) => tracing::warn!("Bond claiming failed: {:?}", e),
         }
 
         Ok(())
-    }
-
-    /// Check if there's an active task of the given type
-    async fn has_active_task_of_type(&self, task_type: &TaskInfo) -> bool {
-        let tasks = self.tasks.lock().await;
-        tasks
-            .values()
-            .any(|(_, info)| std::mem::discriminant(info) == std::mem::discriminant(task_type))
     }
 
     /// Log current task statistics
@@ -1815,7 +1781,6 @@ where
 
             for (_, (_, info)) in tasks.iter() {
                 let task_type = match info {
-                    TaskInfo::GameCreation { .. } => "GameCreation",
                     TaskInfo::GamePrecaching { game_address } => {
                         precaching_games.push(format!("{game_address:?}"));
                         "GamePrecaching"
@@ -1824,8 +1789,6 @@ where
                         proving_games.push(format!("{game_address:?}"));
                         "GameProving"
                     }
-                    TaskInfo::GameResolution => "GameResolution",
-                    TaskInfo::BondClaim => "BondClaim",
                 };
                 *task_counts.entry(task_type).or_insert(0) += 1;
             }
@@ -1879,13 +1842,13 @@ where
         Ok(())
     }
 
-    /// Spawn a game creation task if conditions are met
+    /// Run game creation if conditions are met.
     ///
     /// Returns:
-    /// - Ok(true): Task was successfully spawned
+    /// - Ok(true): Games were created successfully
     /// - Ok(false): No work needed (proposal interval not elapsed or no finalized blocks)
-    /// - Err: Actual error occurred during task spawning
-    async fn spawn_game_creation_task(&self) -> Result<bool> {
+    /// - Err: Actual error occurred
+    async fn run_game_creation(&self) -> Result<bool> {
         let max_games_to_create_env = std::env::var("MAX_GAMES_TO_CREATE").ok();
         let max_games_to_create =
             max_games_to_create_env.as_deref().and_then(|v| v.parse::<usize>().ok()).unwrap_or(8);
@@ -1932,50 +1895,27 @@ where
             return Ok(false);
         }
 
-        let proposer = self.clone();
-        let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
         let init_bond =
             *self.init_bond.get().context("init_bond must be set via startup_validations")?;
-        let l2_block_numbers_cloned = l2_block_numbers.clone();
 
-        let handle = tokio::spawn(async move {
-            let l1_provider = ProviderBuilder::new()
-                .with_simple_nonce_management()
-                .wallet(proposer.signer.clone())
-                .connect_client(l1_rpc);
-            if let Err(e) = rise::create_games(
-                &l1_provider,
-                &cl_rpc,
-                proposer.config.factory_address,
-                proposer.config.game_type,
-                init_bond,
-                starting_game_index,
-                &l2_block_numbers,
-            )
-            .instrument(tracing::info_span!(
-                "[[Proposing]]",
-                starting_game_index,
-                ?l2_block_numbers
-            ))
-            .await
-            {
-                tracing::warn!("Failed to handle game creation: {:?}", e);
-                return Err(e);
-            }
+        let l1_provider = ProviderBuilder::new()
+            .with_simple_nonce_management()
+            .wallet(self.signer.clone())
+            .connect_client(l1_rpc);
 
-            ProposerGauge::GamesCreated.increment(1.0);
-            Ok(())
-        });
+        rise::create_games(
+            &l1_provider,
+            &cl_rpc,
+            self.config.factory_address,
+            self.config.game_type,
+            init_bond,
+            starting_game_index,
+            &l2_block_numbers,
+        )
+        .instrument(tracing::info_span!("[[Proposing]]", starting_game_index, ?l2_block_numbers))
+        .await?;
 
-        let task_info =
-            TaskInfo::GameCreation { l2_block_numbers: l2_block_numbers_cloned.clone() };
-
-        self.tasks.lock().await.insert(task_id, (handle, task_info));
-        tracing::info!(
-            "Spawned game creation task {} for blocks {:?}",
-            task_id,
-            l2_block_numbers_cloned
-        );
+        ProposerGauge::GamesCreated.increment(1.0);
         Ok(true)
     }
 
@@ -2527,33 +2467,6 @@ where
             }
             DeadlineStatus::Ok => Ok(false),
         }
-    }
-
-    /// Spawn a game resolution task
-    #[tracing::instrument(name = "[[Proposer Resolving]]", skip(self))]
-    async fn spawn_game_resolution_task(&self) -> Result<()> {
-        let proposer = self.clone();
-        let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
-
-        let handle = tokio::spawn(async move { proposer.resolve_games().await });
-
-        let task_info = TaskInfo::GameResolution;
-        self.tasks.lock().await.insert(task_id, (handle, task_info));
-        tracing::info!("Spawned game resolution task {}", task_id);
-        Ok(())
-    }
-
-    /// Spawn a bond claim task
-    async fn spawn_bond_claim_task(&self) -> Result<()> {
-        let proposer = self.clone();
-        let task_id = self.next_task_id.fetch_add(1, Ordering::Relaxed);
-
-        let handle = tokio::spawn(async move { proposer.claim_bonds().await });
-
-        let task_info = TaskInfo::BondClaim;
-        self.tasks.lock().await.insert(task_id, (handle, task_info));
-        tracing::info!("Spawned bond claim task {}", task_id);
-        Ok(())
     }
 }
 
