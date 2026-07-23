@@ -1939,10 +1939,13 @@ where
         let l2_block_numbers_cloned = l2_block_numbers.clone();
 
         let handle = tokio::spawn(async move {
+            let l1_provider = ProviderBuilder::new()
+                .with_simple_nonce_management()
+                .wallet(proposer.signer.clone())
+                .connect_client(l1_rpc);
             if let Err(e) = rise::create_games(
-                &l1_rpc,
+                &l1_provider,
                 &cl_rpc,
-                &proposer.signer,
                 proposer.config.factory_address,
                 proposer.config.game_type,
                 init_bond,

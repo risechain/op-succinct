@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use alloy_consensus::Header;
 use alloy_eips::{BlockId, BlockNumHash, BlockNumberOrTag};
-use alloy_network::{AnyRpcBlock, Ethereum, Network, NetworkWallet};
+use alloy_network::{AnyRpcBlock, Ethereum, Network};
 use alloy_primitives::{Address, BlockNumber, Bytes, B256, U256};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rlp::Decodable;
@@ -246,17 +246,14 @@ async fn get_game_index<P: Provider<N>, N: Network>(
 }
 
 async fn create_game(
-    l1_rpc: &RpcClient,
+    l1_provider: &impl Provider<Ethereum>,
     dispute_game_factory_address: Address,
-    signer: impl NetworkWallet<Ethereum> + Clone,
     game_type: GameType,
     output_root: B256,
     extra_data: Bytes,
     init_bond: U256,
 ) -> Result<(GameIndex, Address)> {
-    let l1_provider = ProviderBuilder::new().wallet(signer).connect_client(l1_rpc.clone());
-    let dispute_game_factory =
-        DisputeGameFactory::new(dispute_game_factory_address, l1_provider.clone());
+    let dispute_game_factory = DisputeGameFactory::new(dispute_game_factory_address, l1_provider);
 
     let transaction_request = dispute_game_factory
         .create(game_type, output_root, extra_data)
@@ -291,9 +288,8 @@ async fn create_game(
 }
 
 pub async fn create_games(
-    l1_rpc: &RpcClient,
+    l1_provider: &impl Provider<Ethereum>,
     cl_rpc: &RpcClient,
-    signer: impl NetworkWallet<Ethereum> + Clone,
     dispute_game_factory_address: Address,
     game_type: GameType,
     init_bond: U256,
@@ -302,9 +298,7 @@ pub async fn create_games(
 ) -> Result<BTreeMap<GameIndex, Address>> {
     tracing::debug!(?init_bond, starting_game_index, ?l2_block_numbers, "create_games: start");
 
-    let l1_provider = ProviderBuilder::new().connect_client(l1_rpc.clone());
-    let dispute_game_factory =
-        DisputeGameFactory::new(dispute_game_factory_address, l1_provider.clone());
+    let dispute_game_factory = DisputeGameFactory::new(dispute_game_factory_address, l1_provider);
 
     let mut parent_game_index = starting_game_index;
     let mut created_games = BTreeMap::new();
@@ -336,9 +330,8 @@ pub async fn create_games(
         }
 
         match create_game(
-            &l1_rpc,
+            l1_provider,
             dispute_game_factory_address,
-            signer.clone(),
             game_type,
             output_root,
             extra_data,
@@ -527,11 +520,14 @@ mod tests {
             get_init_bond(&l1_rpc, args.dispute_game_factory_address, GAME_TYPE).await?;
 
         let signer = Signer::LocalSigner(PrivateKeySigner::from_bytes(&args.private_key)?);
+        let l1_provider = ProviderBuilder::new()
+            .with_simple_nonce_management()
+            .wallet(signer)
+            .connect_client(l1_rpc.clone());
 
         let games = create_games(
-            &l1_rpc,
+            &l1_provider,
             &cl_rpc,
-            &signer,
             args.dispute_game_factory_address,
             GAME_TYPE,
             init_bond,

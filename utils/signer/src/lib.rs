@@ -157,8 +157,10 @@ impl Signer {
                 transaction_request.set_from(*signer_address);
 
                 // Fill the transaction request with all of the relevant gas and nonce information.
-                let provider =
-                    ProviderBuilder::new().network::<Ethereum>().connect_client(l1_rpc_client);
+                let provider = ProviderBuilder::new()
+                    .network::<Ethereum>()
+                    .with_simple_nonce_management()
+                    .connect_client(l1_rpc_client);
                 let filled_tx = provider.fill(transaction_request).await?;
 
                 // Sign the transaction request using the Web3Signer.
@@ -188,6 +190,7 @@ impl Signer {
             Signer::LocalSigner(private_key) => {
                 let provider = ProviderBuilder::new()
                     .network::<Ethereum>()
+                    .with_simple_nonce_management()
                     .wallet(EthereumWallet::new(private_key.clone()))
                     .connect_client(l1_rpc_client);
 
@@ -227,6 +230,7 @@ impl Signer {
                 let wallet = EthereumWallet::new(signer.clone());
                 let provider = ProviderBuilder::new()
                     .network::<Ethereum>()
+                    .with_simple_nonce_management()
                     .wallet(wallet)
                     .connect_client(l1_rpc_client);
 
