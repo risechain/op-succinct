@@ -3,40 +3,21 @@ use std::{collections::BTreeMap, time::Duration};
 use alloy_consensus::Header;
 use alloy_eips::{BlockId, BlockNumHash, BlockNumberOrTag};
 use alloy_network::{AnyRpcBlock, Ethereum, Network};
-use alloy_primitives::{Address, BlockNumber, Bytes, B256, U256};
+use alloy_primitives::{keccak256, Address, BlockNumber, Bytes, B256, U256, U64};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rlp::Decodable;
 use alloy_rpc_client::RpcClient;
 use alloy_sol_types::{SolEvent, SolValue};
 use alloy_transport::{RpcError, TransportResult};
 use anyhow::{anyhow, bail, Result};
+use kona_protocol::L1BlockInfoTx;
 use kona_rpc::SafeHeadResponse;
-
-/// Minimal subset of the op-node `optimism_outputAtBlock` response.
-///
-/// The upstream `kona_rpc::OutputResponse` embeds `SyncStatus`, which contains interop fields
-/// (`cross_unsafe_l2`, `local_safe_l2`) not returned by older CL implementations. We only need
-/// `output_root` and `block_ref.l1_origin`, so we define our own struct to avoid the
-/// deserialization error.
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutputResponse {
-    pub output_root: B256,
-    pub block_ref: OutputBlockRef,
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutputBlockRef {
-    // Rise CL returns "l1origin" (lowercase); alias covers the camelCase variant too.
-    #[serde(rename = "l1origin", alias = "l1Origin")]
-    pub l1_origin: BlockNumHash,
-}
+use serde_json::Value;
 
 use crate::contract::{
     AnchorStateRegistry,
     DisputeGameFactory::{self, DisputeGameCreated},
-    IDisputeGame,
+    IDisputeGame, L2Output,
 };
 
 pub type GameIndex = u32;
@@ -59,14 +40,6 @@ pub async fn optimism_safeHeadAtL1Block(
 }
 
 #[allow(non_snake_case)]
-pub async fn optimism_outputAtBlock(
-    cl_rpc: &RpcClient,
-    block_number: BlockNumber,
-) -> TransportResult<OutputResponse> {
-    cl_rpc.request("optimism_outputAtBlock", (BlockNumberOrTag::Number(block_number),)).await
-}
-
-#[allow(non_snake_case)]
 pub async fn eth_getBlockByNumber(
     el_rpc: &RpcClient,
     block_number: BlockNumberOrTag,
@@ -75,31 +48,93 @@ pub async fn eth_getBlockByNumber(
     el_rpc.request("eth_getBlockByNumber", (block_number, full)).await
 }
 
-async fn get_finalized_block_number(el_rpc: &RpcClient) -> Result<BlockNumber> {
-    if let Ok(header) = debug_getRawHeader(el_rpc, BlockId::finalized()).await {
-        return Ok(header.number);
+/// Fetch a block header.
+///
+/// `debug_getRawHeader` is preferred because it is a single RLP blob; nodes that don't expose it
+/// fall back to `eth_getBlockByNumber`.
+async fn fetch_header(el_rpc: &RpcClient, block_number: BlockNumberOrTag) -> Result<Header> {
+    if let Ok(header) = debug_getRawHeader(el_rpc, block_number.into()).await {
+        return Ok(header);
     }
-    match eth_getBlockByNumber(el_rpc, BlockNumberOrTag::Finalized, false).await? {
-        Some(block) => Ok(block.header.number),
-        None => Err(anyhow!("failed to get finalized head")),
-    }
+
+    let block = eth_getBlockByNumber(el_rpc, block_number, false)
+        .await?
+        .ok_or_else(|| anyhow!("block {block_number} not found"))?;
+    block
+        .into_inner()
+        .header
+        .into_consensus()
+        .try_into()
+        .map_err(|e| anyhow!("unexpected header for block {block_number}: {e}"))
 }
 
 pub async fn get_withdrawals_root(
     el_rpc: &RpcClient,
     block_number: BlockNumberOrTag,
 ) -> Result<B256> {
-    let withdrawals_root = match debug_getRawHeader(el_rpc, block_number.into()).await {
-        Ok(header) => header.withdrawals_root,
-        Err(_) => eth_getBlockByNumber(el_rpc, block_number, false)
-            .await?
-            .and_then(|block| block.header.withdrawals_root),
-    };
+    fetch_header(el_rpc, block_number)
+        .await?
+        .withdrawals_root
+        .ok_or_else(|| anyhow!("withdrawals_root not found in block"))
+}
 
-    withdrawals_root.ok_or_else(|| anyhow::anyhow!("withdrawals_root not found in block"))
+/// Compute the output root of an L2 block from its header.
+///
+/// Post-Isthmus the header's `withdrawals_root` is the storage root of the L2ToL1MessagePasser,
+/// so the output root follows from the header alone. This replaces `optimism_outputAtBlock`,
+/// which fails on older blocks once the L2 node has pruned the historical state
+/// ("missing trie node ... state is not available").
+pub async fn get_output_root(el_rpc: &RpcClient, block_number: BlockNumber) -> Result<B256> {
+    let header = fetch_header(el_rpc, BlockNumberOrTag::Number(block_number)).await?;
+    let storage_hash = header
+        .withdrawals_root
+        .ok_or_else(|| anyhow!("L2 block {block_number} has no withdrawals root"))?;
+
+    let l2_output = L2Output {
+        zero: 0,
+        l2_state_root: header.state_root.0.into(),
+        l2_storage_hash: storage_hash.0.into(),
+        l2_claim_hash: header.hash_slow().0.into(),
+    };
+    Ok(keccak256(l2_output.abi_encode()))
+}
+
+/// The L1 origin of an L2 block, decoded from its L1 attributes deposit transaction.
+///
+/// The L1 origin is not a header field: it lives in the `setL1BlockValues*` calldata of the
+/// block's first transaction. Fetching just that transaction reads the origin without pulling
+/// the whole block body.
+pub async fn get_l1_origin(el_rpc: &RpcClient, block_number: BlockNumber) -> Result<BlockNumHash> {
+    let block = BlockNumberOrTag::Number(block_number);
+
+    let l1_attributes: Value =
+        match el_rpc.request("eth_getTransactionByBlockNumberAndIndex", (block, U64::ZERO)).await {
+            Ok(l1_attributes) => l1_attributes,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "eth_getTransactionByBlockNumberAndIndex is unavailable on the L2 RPC. \
+                     Falling back to eth_getBlockByNumber, which downloads the entire block body \
+                     on every L1 origin lookup."
+                );
+                let full_block: Value =
+                    el_rpc.request("eth_getBlockByNumber", (block, true)).await?;
+                full_block["transactions"][0].clone()
+            }
+        };
+
+    let calldata: Bytes = l1_attributes["input"]
+        .as_str()
+        .ok_or_else(|| anyhow!("L2 block {block_number} has no L1 attributes transaction"))?
+        .parse()?;
+
+    let l1_info = L1BlockInfoTx::decode_calldata(&calldata)
+        .map_err(|e| anyhow!("failed to decode L1 attributes of L2 block {block_number}: {e}"))?;
+    Ok(l1_info.id())
 }
 
 async fn get_safe_l1_block_for_l2_block(
+    l2_rpc: &RpcClient,
     cl_rpc: &RpcClient,
     l1_finalized_block_number: BlockNumber,
     l2_block_number: BlockNumber,
@@ -110,7 +145,8 @@ async fn get_safe_l1_block_for_l2_block(
         "get_safe_l1_block_for_l2_block: start"
     );
 
-    let l1_origin = optimism_outputAtBlock(cl_rpc, l2_block_number).await?.block_ref.l1_origin;
+    // The L2 block cannot be safe before its own L1 origin, so the origin bounds the search.
+    let l1_origin = get_l1_origin(l2_rpc, l2_block_number).await?;
 
     let mut lo = l1_origin.number;
     let mut hi = l1_finalized_block_number + 1;
@@ -185,8 +221,8 @@ pub async fn get_next_games_to_create(
     )
     .await?;
 
-    let l1_finalized_block_number = get_finalized_block_number(l1_rpc).await?;
-    let l2_finalized_block_number = get_finalized_block_number(l2_rpc).await?;
+    let l1_finalized_block_number = fetch_header(l1_rpc, BlockNumberOrTag::Finalized).await?.number;
+    let l2_finalized_block_number = fetch_header(l2_rpc, BlockNumberOrTag::Finalized).await?.number;
 
     if starting_l2_block_number > l2_finalized_block_number {
         bail!("starting L2 block is ahead of the finalized L2 block");
@@ -199,6 +235,7 @@ pub async fn get_next_games_to_create(
         let next_l2_block_number = if proposal_interval_in_blocks > 0 {
             current_l2_block_number + proposal_interval_in_blocks
         } else if let Some(l1_block_number) = get_safe_l1_block_for_l2_block(
+            l2_rpc,
             cl_rpc,
             l1_finalized_block_number,
             current_l2_block_number + 1,
@@ -289,7 +326,7 @@ async fn create_game(
 
 pub async fn create_games(
     l1_provider: &impl Provider<Ethereum>,
-    cl_rpc: &RpcClient,
+    l2_rpc: &RpcClient,
     dispute_game_factory_address: Address,
     game_type: GameType,
     init_bond: U256,
@@ -304,7 +341,7 @@ pub async fn create_games(
     let mut created_games = BTreeMap::new();
 
     for bn in l2_block_numbers.iter().copied() {
-        let output_root = optimism_outputAtBlock(cl_rpc, bn).await?.output_root;
+        let output_root = get_output_root(l2_rpc, bn).await?;
         let extra_data = Bytes::from((U256::from(bn), parent_game_index).abi_encode_packed());
 
         tracing::debug!(game_type, ?output_root, ?extra_data, "create_games: creating game");
@@ -478,7 +515,7 @@ mod tests {
             --features integration --features eigenda -- \
             rise::tests::test_create_games --exact --nocapture --ignored -- \
             --l1-rpc-url "$L1_RPC_URL" \
-            --cl-rpc-url "$CL_RPC_URL" \
+            --l2-rpc-url "$L2_RPC_URL" \
             --anchor-state-registry-address "$ANCHOR_STATE_REGISTRY_ADDRESS" \
             --dispute-game-factory-address "$DISPUTE_GAME_FACTORY_ADDRESS" \
             --starting-game-index "$STARTING_GAME_INDEX" \
@@ -498,7 +535,7 @@ mod tests {
             #[arg(long)]
             l1_rpc_url: Url,
             #[arg(long)]
-            cl_rpc_url: Url,
+            l2_rpc_url: Url,
             #[arg(long)]
             anchor_state_registry_address: Address,
             #[arg(long)]
@@ -513,7 +550,7 @@ mod tests {
 
         let args = Args::parse_from(std::env::args_os().skip_while(|arg| arg != "--"));
         let l1_rpc = RpcClient::new_http(args.l1_rpc_url);
-        let cl_rpc = RpcClient::new_http(args.cl_rpc_url);
+        let l2_rpc = RpcClient::new_http(args.l2_rpc_url);
 
         const GAME_TYPE: u32 = 42;
         let init_bond =
@@ -527,7 +564,7 @@ mod tests {
 
         let games = create_games(
             &l1_provider,
-            &cl_rpc,
+            &l2_rpc,
             args.dispute_game_factory_address,
             GAME_TYPE,
             init_bond,

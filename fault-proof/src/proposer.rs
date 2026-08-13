@@ -1905,7 +1905,7 @@ where
 
         rise::create_games(
             &l1_provider,
-            &cl_rpc,
+            &l2_rpc,
             self.config.factory_address,
             self.config.game_type,
             init_bond,

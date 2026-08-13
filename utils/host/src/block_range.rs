@@ -6,7 +6,7 @@ use std::{
 use alloy_eips::BlockId;
 use anyhow::{bail, Result};
 use futures::StreamExt;
-use kona_rpc::{OutputResponse, SafeHeadResponse};
+use kona_rpc::SafeHeadResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -124,15 +124,7 @@ pub async fn split_range_based_on_safe_heads(
     let data_fetcher = OPSuccinctDataFetcher::default();
 
     // Get the L1 origin of l2_start
-    let l2_start_hex = format!("0x{l2_start:x}");
-    let start_output: OutputResponse = data_fetcher
-        .fetch_rpc_data_with_mode(
-            RPCMode::L2Node,
-            "optimism_outputAtBlock",
-            vec![l2_start_hex.into()],
-        )
-        .await?;
-    let l1_start = start_output.block_ref.l1_origin.number;
+    let l1_start = data_fetcher.get_l1_origin_of_l2_block(l2_start).await?.number;
 
     // Get the L1Head from which l2_end can be derived
     let (_, l1_head_number) = data_fetcher.get_safe_l1_block_for_l2_block(l2_end).await?;

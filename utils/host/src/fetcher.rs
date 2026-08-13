@@ -8,7 +8,7 @@ use std::{
 };
 
 use alloy_consensus::{BlockHeader, Header};
-use alloy_eips::{BlockId, BlockNumberOrTag};
+use alloy_eips::{BlockId, BlockNumHash, BlockNumberOrTag};
 use alloy_primitives::{keccak256, Address, Bytes, B256, U256, U64};
 use alloy_provider::{Provider, ProviderBuilder, RootProvider};
 use alloy_rlp::Decodable;
@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures::{stream, StreamExt};
 use kona_genesis::RollupConfig;
 use kona_host::single::SingleChainHost;
-use kona_protocol::L2BlockInfo;
+use kona_protocol::{L1BlockInfoTx, L2BlockInfo};
 use kona_registry::L1_CONFIGS;
 use kona_rpc::{OutputResponse, SafeHeadResponse};
 use op_alloy_consensus::OpBlock;
@@ -83,6 +83,20 @@ impl RPCConfig {
     pub fn l2_rpc_client(&self) -> RpcClient {
         get_rpc_client(self.l2_rpc.clone(), self.l2_requests_per_second)
     }
+}
+
+/// Fetch a header with `debug_getRawHeader`, which returns a single RLP blob instead of a full
+/// JSON block.
+///
+/// Returns `None` — rather than an error — when the node doesn't expose the `debug` namespace or
+/// the blob fails to decode, so callers fall back to `eth_getBlockByNumber`.
+async fn try_get_raw_header<N: Network>(
+    provider: &impl Provider<N>,
+    block_number: BlockId,
+) -> Option<Header> {
+    let raw_header: Bytes =
+        provider.raw_request("debug_getRawHeader".into(), (block_number,)).await.ok()?;
+    Header::decode(&mut raw_header.as_ref()).ok()
 }
 
 /// The mode corresponding to the chain we are fetching data for.
@@ -258,7 +272,13 @@ impl OPSuccinctDataFetcher {
         block_data.into_iter().collect()
     }
 
+    /// Get an L1 header, preferring `debug_getRawHeader` and falling back to
+    /// `eth_getBlockByNumber`. See [`try_get_raw_header`].
     pub async fn get_l1_header(&self, block_number: BlockId) -> Result<Header> {
+        if let Some(header) = try_get_raw_header(self.l1_provider.as_ref(), block_number).await {
+            return Ok(header);
+        }
+
         let block = self.l1_provider.get_block(block_number).await?;
 
         if let Some(block) = block {
@@ -268,13 +288,19 @@ impl OPSuccinctDataFetcher {
         }
     }
 
+    /// Get an L2 header, preferring `debug_getRawHeader` and falling back to
+    /// `eth_getBlockByNumber`. See [`try_get_raw_header`].
     pub async fn get_l2_header(&self, block_number: BlockId) -> Result<Header> {
+        if let Some(header) = try_get_raw_header(self.l2_provider.as_ref(), block_number).await {
+            return Ok(header);
+        }
+
         let block = self.l2_provider.get_block(block_number).await?;
 
         if let Some(block) = block {
             Ok(block.header.inner)
         } else {
-            bail!("Failed to get L1 header for block {block_number}");
+            bail!("Failed to get L2 header for block {block_number}");
         }
     }
 
@@ -568,23 +594,54 @@ impl OPSuccinctDataFetcher {
         Ok(l2_output_data)
     }
 
+    /// Get the L1 origin of an L2 block, decoded from its L1 attributes deposit transaction.
+    ///
+    /// The L1 origin is not a header field: it lives in the `setL1BlockValues*` calldata of the
+    /// block's first transaction. Fetching just that transaction reads the origin without pulling
+    /// the whole block body, and replaces `optimism_outputAtBlock`.
+    pub async fn get_l1_origin_of_l2_block(&self, block_number: u64) -> Result<BlockNumHash> {
+        let block = BlockNumberOrTag::Number(block_number);
+
+        let l1_attributes: Value = match self
+            .l2_provider
+            .raw_request("eth_getTransactionByBlockNumberAndIndex".into(), (block, U64::ZERO))
+            .await
+        {
+            Ok(l1_attributes) => l1_attributes,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "eth_getTransactionByBlockNumberAndIndex is unavailable on the L2 RPC. \
+                     Falling back to eth_getBlockByNumber, which downloads the entire block body \
+                     on every L1 origin lookup."
+                );
+                let full_block: Value = self
+                    .l2_provider
+                    .raw_request("eth_getBlockByNumber".into(), (block, true))
+                    .await?;
+                full_block["transactions"][0].clone()
+            }
+        };
+
+        let calldata: Bytes = l1_attributes["input"]
+            .as_str()
+            .ok_or_else(|| anyhow!("L2 block {block_number} has no L1 attributes transaction"))?
+            .parse()?;
+
+        let l1_info = L1BlockInfoTx::decode_calldata(&calldata).map_err(|e| {
+            anyhow!("failed to decode L1 attributes of L2 block {block_number}: {e}")
+        })?;
+        Ok(l1_info.id())
+    }
+
     /// Get the L1 block from which the `l2_end_block` can be derived.
     ///
     /// Use binary search to find the first L1 block with an L2 safe head >= l2_end_block.
     pub async fn get_safe_l1_block_for_l2_block(&self, l2_end_block: u64) -> Result<(B256, u64)> {
         let latest_l1_header = self.get_l1_header(BlockId::finalized()).await?;
 
-        // Get the l1 origin of the l2 end block.
-        let l2_end_block_hex = format!("0x{l2_end_block:x}");
-        let optimism_output_data: OutputResponse = self
-            .fetch_rpc_data_with_mode(
-                RPCMode::L2Node,
-                "optimism_outputAtBlock",
-                vec![l2_end_block_hex.into()],
-            )
-            .await?;
-
-        let l1_origin = optimism_output_data.block_ref.l1_origin;
+        // The L2 block cannot be safe before its own L1 origin, so the origin bounds the search.
+        let l1_origin = self.get_l1_origin_of_l2_block(l2_end_block).await?;
 
         // Binary search for the first L1 block with L2 safe head >= l2_end_block.
         let mut low = l1_origin.number;
